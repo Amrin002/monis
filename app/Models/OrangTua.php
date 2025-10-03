@@ -22,4 +22,9 @@ class OrangTua extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function siswas()
+    {
+        return $this->hasMany(Siswa::class, 'orang_tua_id');
+    }
 }

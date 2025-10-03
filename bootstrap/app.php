@@ -11,7 +11,21 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+       // Alias middleware kamu
+        $middleware->alias([
+            'role' => \App\Http\Middleware\RoleMiddleware::class,
+        ]);
+
+        // Jika kamu mau masukkan ke dalam group tertentu, bisa juga:
+        $middleware->web(append: [
+            // contoh kalau ada web middleware tambahan
+        ]);
+
+        // kamu bisa atur prioritas atau pengurutan jika perlu
+        // $middleware->priority([
+        //     \App\Http\Middleware\SomeMiddleware::class,
+        //     RoleMiddleware::class,
+        // ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

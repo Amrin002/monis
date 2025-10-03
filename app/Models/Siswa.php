@@ -30,4 +30,9 @@ class Siswa extends Model
     {
         return $this->belongsTo(OrangTua::class, 'orang_tua_id');
     }
+
+    public function absensis()
+    {
+        return $this->hasMany(Absensi::class, 'siswa_id');
+    }
 }

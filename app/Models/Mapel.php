@@ -20,4 +20,8 @@ class Mapel extends Model
     {
         return $this->belongsTo(Guru::class);
     }
+    public function jadwal()
+    {
+        return $this->hasMany(Jadwal::class);
+    }
 }

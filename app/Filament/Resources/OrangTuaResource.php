@@ -21,6 +21,8 @@ class OrangTuaResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
 
     protected static ?string $navigationGroup = 'Manajemen Data';
+    protected static ?string $modelLabel = 'Orang Tua';
+    protected static ?string $pluralLabel = 'Orang Tua';
     public static function form(Form $form): Form
     {
         return $form

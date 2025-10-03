@@ -21,6 +21,9 @@ class MapelResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
     protected static ?string $navigationGroup = 'Manajemen Akademik';
 
+    protected static ?string $pluralLabel = 'Mata Pelajaran';
+    protected static ?string $modelLabel = 'Mata Pelajaran';
+
     public static function form(Form $form): Form
     {
         return $form
@@ -60,6 +63,8 @@ class MapelResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
+                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\ViewAction::make(),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

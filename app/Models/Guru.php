@@ -26,7 +26,7 @@ class Guru extends Model
     }
     public function kelasWali()
     {
-        return $this->hasMany(Kelas::class, 'wali_guru_id');
+        return $this->hasOne(Kelas::class, 'wali_guru_id');
     }
     public function mapels()
     {

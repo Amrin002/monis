@@ -2,6 +2,11 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Widgets\AbsensiChartWidget;
+use App\Filament\Widgets\LaporanTimelineChartWidget;
+use App\Filament\Widgets\LatestActivitiesWidget;
+use App\Filament\Widgets\SiswaPerKelasChartWidget;
+use App\Filament\Widgets\StatsOverviewWidget;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -41,10 +46,26 @@ class AdminPanelProvider extends PanelProvider
                 Pages\Dashboard::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
-            ->widgets([
-                Widgets\AccountWidget::class,
-                Widgets\FilamentInfoWidget::class,
-            ])
+            // ->widgets([
+            //     Widgets\AccountWidget::class,
+            //     Widgets\FilamentInfoWidget::class,
+
+            //     // 1. Card overview (stats)
+            //     StatsOverviewWidget::class,
+
+            //     // 2. Trend laporan
+            //     LaporanTimelineChartWidget::class,
+
+            //     // 3. Chart absensi
+            //     AbsensiChartWidget::class,
+
+            //     // 4. Distribusi siswa per kelas
+            //     SiswaPerKelasChartWidget::class,
+
+            //     // 5. Aktivitas terbaru
+            //     LatestActivitiesWidget::class,
+            // ])
+
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,

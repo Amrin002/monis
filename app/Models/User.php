@@ -48,6 +48,12 @@ class User extends Authenticatable
     }
     public function orangTua()
     {
-        return $this->hasOne(OrangTua::class);
+        return $this->belongsTo(OrangTua::class, 'id', 'user_id');
+    }
+
+    // Relasi: User belongsTo Guru (user_id ada di tabel gurus)
+    public function guru()
+    {
+        return $this->belongsTo(Guru::class, 'id', 'user_id');
     }
 }

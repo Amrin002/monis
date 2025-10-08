@@ -6,7 +6,6 @@ namespace App\Filament\Guru\Resources;
 use App\Filament\Guru\Resources\LaporanKelasResource\Pages;
 use App\Models\Laporan;
 use App\Models\Siswa;
-use App\Models\Jadwal;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -54,54 +53,10 @@ class LaporanKelasResource extends Resource
                             ->searchable()
                             ->preload()
                             ->required()
-                            ->reactive()
-                            ->afterStateUpdated(function (callable $set) {
-                                $set('jadwal_id', null);
-                            })
                             ->helperText('Pilih siswa dari kelas yang Anda wali'),
 
                         Forms\Components\Hidden::make('guru_id')
                             ->default(fn() => Auth::user()->guru->id),
-
-                        Forms\Components\Select::make('jadwal_id')
-                            ->label('Jadwal Mata Pelajaran (Opsional)')
-                            ->options(function (callable $get) {
-                                $siswaId = $get('siswa_id');
-                                $guru = Auth::user()->guru;
-
-                                if (!$siswaId) {
-                                    return [];
-                                }
-
-                                $siswa = Siswa::with('kelas')->find($siswaId);
-
-                                if (!$siswa || !$siswa->kelas) {
-                                    return [];
-                                }
-
-                                $kelasId = $siswa->kelas->id;
-
-                                // Cek apakah guru wali kelas ini juga mengajar di kelas ini
-                                $jadwals = Jadwal::where('kelas_id', $kelasId)
-                                    ->whereHas('mapel', function ($query) use ($guru) {
-                                        $query->where('guru_id', $guru->id);
-                                    })
-                                    ->with(['mapel', 'kelas'])
-                                    ->get();
-
-                                if ($jadwals->isEmpty()) {
-                                    return []; // Wali kelas murni, tidak mengajar di kelas ini
-                                }
-
-                                return $jadwals->mapWithKeys(function ($jadwal) {
-                                    $mapelNama = $jadwal->mapel ? $jadwal->mapel->nama_matapelajaran : 'N/A';
-                                    $kelasNama = $jadwal->kelas ? $jadwal->kelas->nama : 'N/A';
-                                    return [$jadwal->id => "{$kelasNama} - {$mapelNama} ({$jadwal->hari}, {$jadwal->jam_mulai}-{$jadwal->jam_selesai})"];
-                                });
-                            })
-                            ->searchable()
-                            ->preload()
-                            ->helperText('Pilih jika laporan terkait mata pelajaran yang Anda ajar. Kosongkan untuk laporan umum wali kelas.'),
 
                         Forms\Components\DatePicker::make('tanggal')
                             ->label('Tanggal Laporan')
@@ -153,13 +108,6 @@ class LaporanKelasResource extends Resource
                     ->badge()
                     ->color('info'),
 
-                Tables\Columns\TextColumn::make('jadwal.mapel.nama_matapelajaran')
-                    ->label('Mata Pelajaran')
-                    ->badge()
-                    ->color('warning')
-                    ->default('Laporan Umum')
-                    ->toggleable(),
-
                 Tables\Columns\TextColumn::make('keterangan')
                     ->label('Preview Keterangan')
                     ->html()
@@ -191,12 +139,6 @@ class LaporanKelasResource extends Resource
                         })
                             ->pluck('nama', 'id');
                     })
-                    ->searchable()
-                    ->preload(),
-
-                Tables\Filters\SelectFilter::make('jadwal_id')
-                    ->label('Filter Mata Pelajaran')
-                    ->relationship('jadwal.mapel', 'nama_matapelajaran')
                     ->searchable()
                     ->preload(),
 

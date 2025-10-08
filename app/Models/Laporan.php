@@ -30,4 +30,22 @@ class Laporan extends Model
     {
         return $this->belongsTo(Jadwal::class);
     }
+
+    /**
+     * Cek apakah guru sudah membuat laporan untuk siswa ini di tanggal tertentu
+     */
+    public static function sudahAdaLaporanHariIni($guruId, $siswaId, $jadwalId, $tanggal, $ignoreLaporanId = null): bool
+    {
+        $query = static::where('guru_id', $guruId)
+            ->where('siswa_id', $siswaId)
+            ->where('jadwal_id', $jadwalId)
+            ->whereDate('tanggal', $tanggal);
+
+        // Ignore laporan saat ini (untuk edit)
+        if ($ignoreLaporanId) {
+            $query->where('id', '!=', $ignoreLaporanId);
+        }
+
+        return $query->exists();
+    }
 }

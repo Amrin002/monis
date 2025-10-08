@@ -18,7 +18,7 @@ class Kelas extends Model
 
     public function waliGuru()
     {
-        return $this->belongsTo(Guru::class);
+        return $this->belongsTo(Guru::class, 'wali_guru_id'); // ← Tambahkan foreign key
     }
 
     public function siswas()

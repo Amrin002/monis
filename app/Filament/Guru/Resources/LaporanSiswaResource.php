@@ -14,6 +14,8 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
+use Filament\Notifications\Notification;
+use Carbon\Carbon;
 
 class LaporanSiswaResource extends Resource
 {
@@ -40,7 +42,6 @@ class LaporanSiswaResource extends Resource
                             ->options(function () {
                                 $guru = Auth::user()->guru;
 
-                                // Ambil semua siswa dari kelas yang diajar oleh guru ini
                                 return Siswa::whereHas('kelas.jadwals.mapel', function ($query) use ($guru) {
                                     $query->where('guru_id', $guru->id);
                                 })
@@ -81,31 +82,81 @@ class LaporanSiswaResource extends Resource
                                 }
 
                                 $kelasId = $siswa->kelas->id;
+                                $hariIni = static::getNamaHariIndonesia(now()->dayOfWeek);
 
-                                // Ambil jadwal dari guru ini di kelas siswa
-                                return Jadwal::where('kelas_id', $kelasId)
+                                $jadwals = Jadwal::where('kelas_id', $kelasId)
                                     ->whereHas('mapel', function ($query) use ($guru) {
                                         $query->where('guru_id', $guru->id);
                                     })
                                     ->with(['mapel', 'kelas'])
                                     ->get()
-                                    ->mapWithKeys(function ($jadwal) {
-                                        $mapelNama = $jadwal->mapel ? $jadwal->mapel->nama_matapelajaran : 'N/A';
-                                        $kelasNama = $jadwal->kelas ? $jadwal->kelas->nama : 'N/A';
-                                        return [$jadwal->id => "{$kelasNama} - {$mapelNama} ({$jadwal->hari}, {$jadwal->jam_mulai}-{$jadwal->jam_selesai})"];
+                                    ->sortBy(function ($jadwal) use ($hariIni) {
+                                        return $jadwal->hari === $hariIni ? 0 : 1;
                                     });
+
+                                return $jadwals->mapWithKeys(function ($jadwal) use ($hariIni) {
+                                    $mapelNama = $jadwal->mapel ? $jadwal->mapel->nama_matapelajaran : 'N/A';
+                                    $kelasNama = $jadwal->kelas ? $jadwal->kelas->nama : 'N/A';
+                                    $jamKe = $jadwal->getJamKe();
+                                    $marker = $jadwal->hari === $hariIni ? '🟢 ' : '';
+
+                                    return [$jadwal->id => "{$marker}{$kelasNama} - {$mapelNama} (Jam ke-{$jamKe}, {$jadwal->hari})"];
+                                });
                             })
                             ->searchable()
                             ->preload()
                             ->required()
-                            ->helperText('Pilih jadwal mata pelajaran terkait laporan ini'),
+                            ->reactive()
+                            ->afterStateUpdated(function (callable $get, $state) {
+                                if (!$state) return;
+
+                                $jadwal = Jadwal::find($state);
+                                if (!$jadwal) return;
+
+                                $hariIni = static::getNamaHariIndonesia(now()->dayOfWeek);
+
+                                if ($jadwal->hari !== $hariIni) {
+                                    Notification::make()
+                                        ->warning()
+                                        ->title('Perhatian: Jadwal Berbeda Hari')
+                                        ->body("Anda memilih jadwal hari {$jadwal->hari}, sedangkan hari ini adalah {$hariIni}. Pastikan ini adalah laporan yang benar.")
+                                        ->duration(8000)
+                                        ->send();
+                                }
+                            })
+                            ->helperText(fn() => 'Jadwal dengan 🟢 adalah jadwal hari ini (' . static::getNamaHariIndonesia(now()->dayOfWeek) . ')'),
 
                         Forms\Components\DatePicker::make('tanggal')
                             ->label('Tanggal Laporan')
                             ->required()
                             ->default(now())
                             ->native(false)
-                            ->maxDate(now()),
+                            ->maxDate(now())
+                            ->reactive()
+                            ->afterStateUpdated(function (callable $get, $state) {
+                                $siswaId = $get('siswa_id');
+                                $jadwalId = $get('jadwal_id');
+                                $guruId = Auth::user()->guru->id;
+
+                                if ($siswaId && $jadwalId && $state) {
+                                    $sudahAda = Laporan::sudahAdaLaporanHariIni(
+                                        $guruId,
+                                        $siswaId,
+                                        $jadwalId,
+                                        $state,
+                                        $get('id')
+                                    );
+
+                                    if ($sudahAda) {
+                                        Notification::make()
+                                            ->danger()
+                                            ->title('Laporan Sudah Ada!')
+                                            ->body('Anda sudah membuat laporan untuk siswa ini pada mata pelajaran dan tanggal yang sama!')
+                                            ->persistent()
+                                            ->send();
+                                    }
+                                }
+                            }),
                     ])
                     ->columns(2),
 
@@ -131,6 +182,21 @@ class LaporanSiswaResource extends Resource
             ]);
     }
 
+    protected static function getNamaHariIndonesia(int $dayOfWeek): string
+    {
+        $hari = [
+            0 => 'Minggu',
+            1 => 'Senin',
+            2 => 'Selasa',
+            3 => 'Rabu',
+            4 => 'Kamis',
+            5 => 'Jumat',
+            6 => 'Sabtu',
+        ];
+
+        return $hari[$dayOfWeek] ?? 'Unknown';
+    }
+
     public static function table(Table $table): Table
     {
         return $table
@@ -148,13 +214,40 @@ class LaporanSiswaResource extends Resource
                 Tables\Columns\TextColumn::make('siswa.kelas.nama')
                     ->label('Kelas')
                     ->badge()
-                    ->color('info'),
+                    ->color('info')
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('jadwal.mapel.nama_matapelajaran')
                     ->label('Mata Pelajaran')
                     ->badge()
                     ->color('success')
                     ->sortable(),
+
+                Tables\Columns\TextColumn::make('jadwal.hari')
+                    ->label('Hari')
+                    ->badge()
+                    ->sortable()
+                    ->color(fn(string $state): string => match ($state) {
+                        'Senin' => 'danger',
+                        'Selasa' => 'warning',
+                        'Rabu' => 'success',
+                        'Kamis' => 'info',
+                        'Jumat' => 'primary',
+                        'Sabtu' => 'gray',
+                        default => 'gray',
+                    }),
+
+                Tables\Columns\TextColumn::make('jadwal_info')
+                    ->label('Jam Ke')
+                    ->getStateUsing(function (Laporan $record) {
+                        if (!$record->jadwal) {
+                            return '-';
+                        }
+                        $jamKe = $record->jadwal->getJamKe();
+                        return "Jam ke-{$jamKe}";
+                    })
+                    ->badge()
+                    ->color('warning'),
 
                 Tables\Columns\TextColumn::make('keterangan')
                     ->label('Preview Keterangan')
@@ -177,6 +270,7 @@ class LaporanSiswaResource extends Resource
             ])
             ->defaultSort('tanggal', 'desc')
             ->filters([
+                // FILTER KELAS - MENGGUNAKAN QUERY
                 Tables\Filters\SelectFilter::make('kelas')
                     ->label('Filter Kelas')
                     ->options(function () {
@@ -185,43 +279,48 @@ class LaporanSiswaResource extends Resource
                         return \App\Models\Kelas::whereHas('jadwals.mapel', function ($query) use ($guru) {
                             $query->where('guru_id', $guru->id);
                         })
-                            ->pluck('nama', 'id');
+                            ->orderBy('nama')
+                            ->pluck('nama', 'nama');
                     })
                     ->query(function (Builder $query, array $data): Builder {
-                        if (isset($data['value']) && $data['value']) {
-                            return $query->whereHas('siswa', function ($q) use ($data) {
-                                $q->where('kelas_id', $data['value']);
+                        if (isset($data['value']) && !empty($data['value'])) {
+                            return $query->whereHas('siswa.kelas', function ($q) use ($data) {
+                                $q->where('nama', $data['value']);
                             });
                         }
                         return $query;
                     })
                     ->searchable(),
 
-                Tables\Filters\SelectFilter::make('siswa')
-                    ->label('Filter Siswa')
-                    ->options(function () {
-                        $guru = Auth::user()->guru;
+                // FILTER HARI - MENGGUNAKAN QUERY
+                Tables\Filters\SelectFilter::make('hari')
+                    ->label('Filter Hari')
+                    ->options([
+                        'Senin' => 'Senin',
+                        'Selasa' => 'Selasa',
+                        'Rabu' => 'Rabu',
+                        'Kamis' => 'Kamis',
+                        'Jumat' => 'Jumat',
+                        'Sabtu' => 'Sabtu',
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        if (isset($data['value']) && !empty($data['value'])) {
+                            return $query->whereHas('jadwal', function ($q) use ($data) {
+                                $q->where('hari', $data['value']);
+                            });
+                        }
+                        return $query;
+                    }),
 
-                        return Siswa::whereHas('kelas.jadwals.mapel', function ($query) use ($guru) {
-                            $query->where('guru_id', $guru->id);
-                        })
-                            ->pluck('nama', 'id');
-                    })
-                    ->searchable()
-                    ->preload(),
-
-                Tables\Filters\SelectFilter::make('jadwal_id')
-                    ->label('Filter Mata Pelajaran')
-                    ->relationship('jadwal.mapel', 'nama_matapelajaran')
-                    ->searchable()
-                    ->preload(),
-
+                // FILTER RANGE TANGGAL
                 Tables\Filters\Filter::make('tanggal')
                     ->form([
                         Forms\Components\DatePicker::make('dari')
-                            ->label('Dari Tanggal'),
+                            ->label('Dari Tanggal')
+                            ->native(false),
                         Forms\Components\DatePicker::make('sampai')
-                            ->label('Sampai Tanggal'),
+                            ->label('Sampai Tanggal')
+                            ->native(false),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
@@ -234,6 +333,28 @@ class LaporanSiswaResource extends Resource
                                 fn(Builder $query, $date): Builder => $query->whereDate('tanggal', '<=', $date),
                             );
                     }),
+
+                // FILTER SISWA
+                Tables\Filters\SelectFilter::make('siswa_id')
+                    ->label('Filter Siswa')
+                    ->options(function () {
+                        $guru = Auth::user()->guru;
+
+                        return Siswa::whereHas('kelas.jadwals.mapel', function ($query) use ($guru) {
+                            $query->where('guru_id', $guru->id);
+                        })
+                            ->orderBy('nama')
+                            ->pluck('nama', 'id');
+                    })
+                    ->searchable()
+                    ->preload(),
+
+                // FILTER MATA PELAJARAN
+                Tables\Filters\SelectFilter::make('jadwal_id')
+                    ->label('Filter Mata Pelajaran')
+                    ->relationship('jadwal.mapel', 'nama_matapelajaran')
+                    ->searchable()
+                    ->preload(),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
@@ -269,14 +390,13 @@ class LaporanSiswaResource extends Resource
     {
         $guru = Auth::user()->guru;
 
-        // Hanya tampilkan laporan dari siswa yang diajar oleh guru ini
-        // dan laporan harus terkait dengan jadwal (tidak null)
         return parent::getEloquentQuery()
             ->where('guru_id', $guru->id)
-            ->whereNotNull('jadwal_id') // Hanya laporan yang terkait mata pelajaran
+            ->whereNotNull('jadwal_id')
             ->whereHas('jadwal.mapel', function ($query) use ($guru) {
                 $query->where('guru_id', $guru->id);
-            });
+            })
+            ->with(['jadwal.kelas', 'jadwal.mapel', 'siswa.kelas']); // Eager loading
     }
 
     public static function canViewAny(): bool

@@ -1,4 +1,5 @@
 <?php
+// app/Filament/Resources/JadwalResource.php
 
 namespace App\Filament\Resources;
 
@@ -14,6 +15,7 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
+use Filament\Notifications\Notification;
 
 class JadwalResource extends Resource
 {
@@ -35,15 +37,20 @@ class JadwalResource extends Resource
                             ->searchable()
                             ->preload()
                             ->required()
+                            ->reactive()
                             ->helperText('Pilih kelas untuk jadwal ini'),
 
                         Forms\Components\Select::make('mapel_id')
                             ->label('Mata Pelajaran')
-                            ->options(Mapel::all()->pluck('nama_matapelajaran', 'id'))
+                            ->options(Mapel::with('guru')->get()->mapWithKeys(function ($mapel) {
+                                $guruNama = $mapel->guru ? $mapel->guru->nama : 'Tanpa Guru';
+                                return [$mapel->id => "{$mapel->nama_matapelajaran} - Guru: {$guruNama}"];
+                            }))
                             ->searchable()
                             ->preload()
                             ->required()
-                            ->helperText('Pilih mata pelajaran'),
+                            ->reactive()
+                            ->helperText('Pilih mata pelajaran (otomatis memilih guru)'),
 
                         Forms\Components\Select::make('hari')
                             ->label('Hari')
@@ -56,6 +63,7 @@ class JadwalResource extends Resource
                                 'Sabtu' => 'Sabtu',
                             ])
                             ->required()
+                            ->reactive()
                             ->native(false),
                     ])
                     ->columns(3),
@@ -66,17 +74,57 @@ class JadwalResource extends Resource
                             ->label('Jam Mulai')
                             ->required()
                             ->seconds(false)
-                            ->native(false),
+                            ->native(false)
+                            ->reactive()
+                            ->afterStateUpdated(function (callable $get, $state) {
+                                static::validateJadwalBentrok($get, $state);
+                            }),
 
                         Forms\Components\TimePicker::make('jam_selesai')
                             ->label('Jam Selesai')
                             ->required()
                             ->seconds(false)
                             ->native(false)
-                            ->after('jam_mulai'),
+                            ->after('jam_mulai')
+                            ->reactive()
+                            ->afterStateUpdated(function (callable $get, $state) {
+                                static::validateJadwalBentrok($get, $state);
+                            }),
                     ])
-                    ->columns(2),
+                    ->columns(2)
+                    ->description('⚠️ Sistem akan cek otomatis: (1) Bentrok kelas yang sama, (2) Bentrok guru yang sama'),
             ]);
+    }
+
+    /**
+     * Validasi bentrok jadwal secara real-time
+     */
+    protected static function validateJadwalBentrok(callable $get, $state): void
+    {
+        $kelasId = $get('kelas_id');
+        $mapelId = $get('mapel_id');
+        $hari = $get('hari');
+        $jamMulai = $get('jam_mulai');
+        $jamSelesai = $get('jam_selesai');
+        $jadwalId = $get('id'); // Untuk mode edit
+
+        // Hanya validasi jika semua field terisi
+        if (!$kelasId || !$mapelId || !$hari || !$jamMulai || !$jamSelesai) {
+            return;
+        }
+
+        $hasil = Jadwal::cekBentrokJadwal($kelasId, $mapelId, $hari, $jamMulai, $jamSelesai, $jadwalId);
+
+        if ($hasil['bentrok']) {
+            $icon = $hasil['tipe'] === 'guru' ? '👨‍🏫' : '🏫';
+
+            Notification::make()
+                ->danger()
+                ->title("{$icon} Jadwal Bentrok!")
+                ->body($hasil['pesan'])
+                ->persistent()
+                ->send();
+        }
     }
 
     public static function table(Table $table): Table
@@ -95,7 +143,8 @@ class JadwalResource extends Resource
                     ->searchable()
                     ->sortable()
                     ->badge()
-                    ->color('success'),
+                    ->color('success')
+                    ->description(fn(Jadwal $record) => $record->mapel->guru ? "Guru: {$record->mapel->guru->nama}" : ''),
 
                 Tables\Columns\TextColumn::make('hari')
                     ->label('Hari')
@@ -131,6 +180,12 @@ class JadwalResource extends Resource
                     })
                     ->badge()
                     ->color('warning'),
+
+                Tables\Columns\TextColumn::make('jam_ke')
+                    ->label('Jam Ke')
+                    ->getStateUsing(fn(Jadwal $record) => "Jam ke-{$record->jam_ke}")
+                    ->badge()
+                    ->color('primary'),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
@@ -192,7 +247,6 @@ class JadwalResource extends Resource
             'index' => Pages\ListJadwals::route('/'),
             'create' => Pages\CreateJadwal::route('/create'),
             'edit' => Pages\EditJadwal::route('/{record}/edit'),
-
         ];
     }
 }

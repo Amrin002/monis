@@ -1,15 +1,15 @@
 <?php
 
-namespace App\Filament\Resources\LaporanResource\Pages;
+namespace App\Filament\Guru\Resources\LaporanKelasResource\Pages;
 
-use App\Filament\Resources\LaporanResource;
+use App\Filament\Guru\Resources\LaporanKelasResource;
 use Filament\Actions;
 use Filament\Resources\Pages\ListRecords;
 use Illuminate\Database\Eloquent\Builder;
 
-class ListLaporans extends ListRecords
+class ListLaporanKelas extends ListRecords
 {
-    protected static string $resource = LaporanResource::class;
+    protected static string $resource = LaporanKelasResource::class;
 
     protected function getHeaderActions(): array
     {
@@ -18,10 +18,9 @@ class ListLaporans extends ListRecords
         ];
     }
 
-    // Eager loading untuk menghindari N+1 query problem
     protected function getTableQuery(): Builder
     {
         return parent::getTableQuery()
-            ->with(['siswa.kelas', 'guru']); // ganti 'waliGuru' jadi 'guru'
+            ->with(['siswa.kelas', 'guru']);
     }
 }

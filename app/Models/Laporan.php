@@ -22,8 +22,12 @@ class Laporan extends Model
     /**
      * Relasi ke Guru (wali kelas)
      */
-    public function waliGuru()
+    public function guru()
     {
-        return $this->belongsTo(Guru::class, 'wali_guru_id');
+        return $this->belongsTo(Guru::class, 'guru_id');
+    }
+    public function jadwal()
+    {
+        return $this->belongsTo(Jadwal::class);
     }
 }

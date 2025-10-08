@@ -34,4 +34,8 @@ class Jadwal extends Model
     {
         return $this->hasMany(Absensi::class, 'jadwal_id');
     }
+    public function laporans()
+    {
+        return $this->hasMany(Laporan::class);
+    }
 }

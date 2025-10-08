@@ -20,7 +20,7 @@ class LatestActivitiesWidget extends BaseWidget
             ->heading('Aktivitas Terbaru')
             ->query(
                 Laporan::query()
-                    ->with(['siswa', 'waliGuru'])
+                    ->with(['siswa.kelas', 'guru'])
                     ->latest()
                     ->limit(5)
             )

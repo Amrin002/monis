@@ -13,8 +13,9 @@ return new class extends Migration
     {
         Schema::create('laporans', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('siswa_id')->constrained('siswas')->onDelete('cascade');
-            $table->foreignId('wali_guru_id')->constrained('gurus')->onDelete('cascade');
+            $table->foreignId('siswa_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('guru_id')->constrained('gurus')->cascadeOnDelete(); // bisa wali kelas atau guru mapel
+            $table->foreignId('jadwal_id')->nullable()->constrained('jadwals')->nullOnDelete(); // opsional, kalau laporan dari guru wali
             $table->text('keterangan');
             $table->date('tanggal');
             $table->timestamps();

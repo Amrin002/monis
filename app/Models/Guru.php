@@ -42,4 +42,8 @@ class Guru extends Model
     {
         return (bool) $this->is_guru_mapel;
     }
+    public function laporans()
+    {
+        return $this->hasMany(Laporan::class);
+    }
 }

@@ -8,6 +8,7 @@ use App\Models\Laporan;
 use App\Models\Siswa;
 use App\Models\Guru;
 use App\Models\Kelas;
+use App\Models\Jadwal;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -32,23 +33,56 @@ class LaporanResource extends Resource
                     ->schema([
                         Forms\Components\Select::make('siswa_id')
                             ->label('Siswa')
-                            ->options(function () {
-                                return Siswa::with('kelas')
-                                    ->get()
-                                    ->mapWithKeys(function ($siswa) {
-                                        $kelasNama = $siswa->kelas ? $siswa->kelas->nama : 'Tanpa Kelas';
-                                        return [$siswa->id => "{$siswa->nama} - {$siswa->nis} ({$kelasNama})"];
-                                    });
-                            })
+                            ->relationship('siswa', 'nama')
+                            ->getOptionLabelFromRecordUsing(fn(Siswa $record) => "{$record->nama} - {$record->nis} ({$record->kelas->nama})")
                             ->searchable()
                             ->preload()
                             ->required()
+                            ->reactive()
+                            ->afterStateUpdated(function (callable $set) {
+                                // Reset guru dan jadwal ketika siswa berubah
+                                $set('guru_id', null);
+                                $set('jadwal_id', null);
+                            })
                             ->helperText('Pilih siswa yang akan dilaporkan'),
 
-                        Forms\Components\Select::make('wali_guru_id')
+                        Forms\Components\Select::make('guru_id')
                             ->label('Guru Pembuat')
-                            ->options(function () {
-                                return Guru::with('kelasWali', 'mapels')
+                            ->options(function (callable $get) {
+                                $siswaId = $get('siswa_id');
+
+                                if (!$siswaId) {
+                                    return [];
+                                }
+
+                                $siswa = Siswa::with('kelas')->find($siswaId);
+
+                                if (!$siswa || !$siswa->kelas) {
+                                    return [];
+                                }
+
+                                $kelasId = $siswa->kelas->id;
+                                $guruIds = collect();
+
+                                // 1. Ambil wali kelas dari kelas siswa
+                                $waliKelas = Guru::where('id', $siswa->kelas->wali_guru_id)
+                                    ->with('kelasWali')
+                                    ->first();
+
+                                if ($waliKelas) {
+                                    $guruIds->push($waliKelas->id);
+                                }
+
+                                // 2. Ambil guru yang mengajar di kelas tersebut (punya jadwal)
+                                $guruMapel = Guru::whereHas('mapels.jadwal', function ($query) use ($kelasId) {
+                                    $query->where('kelas_id', $kelasId);
+                                })->pluck('id');
+
+                                $guruIds = $guruIds->merge($guruMapel)->unique();
+
+                                // Ambil data guru dan format
+                                return Guru::whereIn('id', $guruIds)
+                                    ->with('kelasWali', 'mapels')
                                     ->get()
                                     ->mapWithKeys(function ($guru) {
                                         $roles = [];
@@ -67,13 +101,70 @@ class LaporanResource extends Resource
                             ->searchable()
                             ->preload()
                             ->required()
-                            ->helperText('Pilih guru pembuat laporan (Wali Kelas atau Guru Mapel)'),
+                            ->reactive()
+                            ->afterStateUpdated(function (callable $set) {
+                                // Reset jadwal ketika guru berubah
+                                $set('jadwal_id', null);
+                            })
+                            ->helperText('Pilih guru pembuat laporan (Wali Kelas atau Guru Mapel yang mengajar di kelas ini)'),
+
+                        Forms\Components\Select::make('jadwal_id')
+                            ->label('Jadwal Mata Pelajaran (Opsional)')
+                            ->options(function (callable $get) {
+                                $siswaId = $get('siswa_id');
+                                $guruId = $get('guru_id');
+
+                                if (!$siswaId || !$guruId) {
+                                    return [];
+                                }
+
+                                $siswa = Siswa::with('kelas')->find($siswaId);
+
+                                if (!$siswa || !$siswa->kelas) {
+                                    return [];
+                                }
+
+                                $kelasId = $siswa->kelas->id;
+                                $guru = Guru::find($guruId);
+
+                                // Jika guru adalah wali kelas saja (tidak mengajar mapel di kelas ini)
+                                // maka tidak ada jadwal yang ditampilkan
+                                if ($guru && $guru->is_wali_kelas && $guru->kelasWali && $guru->kelasWali->id == $kelasId) {
+                                    // Cek apakah guru ini juga mengajar di kelas ini
+                                    $hasMapelInKelas = Jadwal::where('kelas_id', $kelasId)
+                                        ->whereHas('mapel', function ($query) use ($guruId) {
+                                            $query->where('guru_id', $guruId);
+                                        })
+                                        ->exists();
+
+                                    if (!$hasMapelInKelas) {
+                                        return []; // Wali kelas murni, tidak ada jadwal
+                                    }
+                                }
+
+                                // Ambil jadwal dari guru ini di kelas siswa
+                                return Jadwal::where('kelas_id', $kelasId)
+                                    ->whereHas('mapel', function ($query) use ($guruId) {
+                                        $query->where('guru_id', $guruId);
+                                    })
+                                    ->with(['mapel', 'kelas'])
+                                    ->get()
+                                    ->mapWithKeys(function ($jadwal) {
+                                        $mapelNama = $jadwal->mapel ? $jadwal->mapel->nama_matapelajaran : 'N/A';
+                                        $kelasNama = $jadwal->kelas ? $jadwal->kelas->nama : 'N/A';
+                                        return [$jadwal->id => "{$kelasNama} - {$mapelNama} ({$jadwal->hari}, {$jadwal->jam_mulai}-{$jadwal->jam_selesai})"];
+                                    });
+                            })
+                            ->searchable()
+                            ->preload()
+                            ->helperText('Pilih jika laporan terkait mata pelajaran tertentu. Kosongkan jika laporan umum dari wali kelas.'),
 
                         Forms\Components\DatePicker::make('tanggal')
                             ->label('Tanggal Laporan')
                             ->required()
                             ->default(now())
-                            ->native(false),
+                            ->native(false)
+                            ->columnSpanFull(),
                     ])
                     ->columns(3),
 
@@ -122,11 +213,19 @@ class LaporanResource extends Resource
                     ->color('info')
                     ->default('-'),
 
-                Tables\Columns\TextColumn::make('waliGuru.nama')
+                Tables\Columns\TextColumn::make('jadwal.mapel.nama_matapelajaran')
+                    ->label('Mata Pelajaran')
+                    ->badge()
+                    ->color('warning')
+                    ->default('Laporan Umum')
+                    ->sortable()
+                    ->toggleable(),
+
+                Tables\Columns\TextColumn::make('guru.nama')
                     ->label('Pembuat Laporan')
                     ->searchable()
                     ->sortable()
-                    ->description(fn(Laporan $record): string => $record->waliGuru->is_wali_kelas ? 'Wali Kelas' : 'Guru'),
+                    ->description(fn(Laporan $record): string => $record->guru->is_wali_kelas ? 'Wali Kelas' : 'Guru Mapel'),
 
                 Tables\Columns\TextColumn::make('keterangan')
                     ->label('Preview Keterangan')
@@ -157,59 +256,37 @@ class LaporanResource extends Resource
             ->filters([
                 Tables\Filters\SelectFilter::make('kelas')
                     ->label('Filter Kelas')
-                    ->options(Kelas::all()->pluck('nama', 'id'))
-                    ->query(function (Builder $query, array $data): Builder {
-                        if (isset($data['value']) && $data['value']) {
-                            return $query->whereHas('siswa', function ($q) use ($data) {
-                                $q->where('kelas_id', $data['value']);
-                            });
-                        }
-                        return $query;
-                    })
+                    ->relationship('siswa.kelas', 'nama')
                     ->searchable()
                     ->preload(),
 
-                Tables\Filters\SelectFilter::make('siswa')
+                Tables\Filters\SelectFilter::make('siswa_id')
                     ->label('Filter Siswa')
-                    ->options(Siswa::all()->pluck('nama', 'id'))
+                    ->relationship('siswa', 'nama')
                     ->searchable()
-                    ->preload()
-                    ->query(function (Builder $query, array $data): Builder {
-                        if (isset($data['value']) && $data['value']) {
-                            return $query->where('siswa_id', $data['value']);
-                        }
-                        return $query;
-                    }),
+                    ->preload(),
 
-                Tables\Filters\SelectFilter::make('wali_guru')
+                Tables\Filters\SelectFilter::make('guru_id')
                     ->label('Filter Pembuat')
-                    ->options(Guru::all()->pluck('nama', 'id'))
+                    ->relationship('guru', 'nama')
                     ->searchable()
-                    ->preload()
-                    ->query(function (Builder $query, array $data): Builder {
-                        if (isset($data['value']) && $data['value']) {
-                            return $query->where('wali_guru_id', $data['value']);
-                        }
-                        return $query;
-                    }),
+                    ->preload(),
+
+                Tables\Filters\SelectFilter::make('jadwal_id')
+                    ->label('Filter Mata Pelajaran')
+                    ->relationship('jadwal.mapel', 'nama_matapelajaran')
+                    ->searchable()
+                    ->preload(),
 
                 Tables\Filters\Filter::make('tanggal')
                     ->form([
-                        Forms\Components\DatePicker::make('dari_tanggal')
-                            ->label('Dari Tanggal'),
-                        Forms\Components\DatePicker::make('sampai_tanggal')
-                            ->label('Sampai Tanggal'),
+                        Forms\Components\DatePicker::make('dari_tanggal')->label('Dari Tanggal'),
+                        Forms\Components\DatePicker::make('sampai_tanggal')->label('Sampai Tanggal'),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
-                            ->when(
-                                $data['dari_tanggal'],
-                                fn(Builder $query, $date): Builder => $query->whereDate('tanggal', '>=', $date),
-                            )
-                            ->when(
-                                $data['sampai_tanggal'],
-                                fn(Builder $query, $date): Builder => $query->whereDate('tanggal', '<=', $date),
-                            );
+                            ->when($data['dari_tanggal'], fn(Builder $query, $date): Builder => $query->whereDate('tanggal', '>=', $date))
+                            ->when($data['sampai_tanggal'], fn(Builder $query, $date): Builder => $query->whereDate('tanggal', '<=', $date));
                     })
                     ->indicateUsing(function (array $data): array {
                         $indicators = [];
@@ -235,7 +312,7 @@ class LaporanResource extends Resource
                 ]),
             ])
             ->emptyStateHeading('Belum ada laporan')
-            ->emptyStateDescription('Laporan siswa akan muncul di sini setelah guru wali kelas membuat laporan.')
+            ->emptyStateDescription('Laporan siswa akan muncul di sini setelah guru membuat laporan.')
             ->emptyStateIcon('heroicon-o-document-text');
     }
 
@@ -252,7 +329,6 @@ class LaporanResource extends Resource
             'index' => Pages\ListLaporans::route('/'),
             'create' => Pages\CreateLaporan::route('/create'),
             'edit' => Pages\EditLaporan::route('/{record}/edit'),
-
         ];
     }
 

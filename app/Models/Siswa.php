@@ -39,4 +39,19 @@ class Siswa extends Model
     {
         return $this->hasMany(Laporan::class);
     }
+    public function laporanWaliKelas()
+    {
+        return $this->hasMany(LaporanWalikelas::class);
+    }
+
+    /**
+     * Get laporan wali kelas terbaru
+     */
+    public function laporanWaliKelasTerbaru($limit = 5)
+    {
+        return $this->laporanWaliKelas()
+            ->orderBy('tanggal', 'desc')
+            ->limit($limit)
+            ->get();
+    }
 }

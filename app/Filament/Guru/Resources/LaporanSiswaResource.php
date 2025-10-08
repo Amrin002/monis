@@ -7,6 +7,7 @@ use App\Filament\Guru\Resources\LaporanSiswaResource\Pages;
 use App\Models\Laporan;
 use App\Models\Siswa;
 use App\Models\Jadwal;
+use App\Notifications\LaporanMapelTerkirimNotification;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -16,6 +17,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Filament\Notifications\Notification;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Log;
 
 class LaporanSiswaResource extends Resource
 {
@@ -249,6 +252,16 @@ class LaporanSiswaResource extends Resource
                     ->badge()
                     ->color('warning'),
 
+                // KOLOM BARU: STATUS PENGIRIMAN
+                Tables\Columns\IconColumn::make('terkirim_ke_wali')
+                    ->label('Status')
+                    ->boolean()
+                    ->trueIcon('heroicon-o-check-circle')
+                    ->falseIcon('heroicon-o-x-circle')
+                    ->trueColor('success')
+                    ->falseColor('danger')
+                    ->tooltip(fn(Laporan $record): string => $record->status_pengiriman),
+
                 Tables\Columns\TextColumn::make('keterangan')
                     ->label('Preview Keterangan')
                     ->html()
@@ -270,7 +283,14 @@ class LaporanSiswaResource extends Resource
             ])
             ->defaultSort('tanggal', 'desc')
             ->filters([
-                // FILTER KELAS - MENGGUNAKAN QUERY
+                // FILTER STATUS PENGIRIMAN
+                Tables\Filters\TernaryFilter::make('terkirim_ke_wali')
+                    ->label('Status Pengiriman')
+                    ->placeholder('Semua Status')
+                    ->trueLabel('Sudah Terkirim')
+                    ->falseLabel('Belum Terkirim'),
+
+                // FILTER KELAS
                 Tables\Filters\SelectFilter::make('kelas')
                     ->label('Filter Kelas')
                     ->options(function () {
@@ -292,7 +312,7 @@ class LaporanSiswaResource extends Resource
                     })
                     ->searchable(),
 
-                // FILTER HARI - MENGGUNAKAN QUERY
+                // FILTER HARI
                 Tables\Filters\SelectFilter::make('hari')
                     ->label('Filter Hari')
                     ->options([
@@ -357,12 +377,269 @@ class LaporanSiswaResource extends Resource
                     ->preload(),
             ])
             ->actions([
+                // ACTION: KIRIM KE WALI KELAS (PER ROW)
+                Tables\Actions\Action::make('kirim_ke_wali')
+                    ->label('Kirim ke Wali Kelas')
+                    ->icon('heroicon-o-paper-airplane')
+                    ->color('success')
+                    ->requiresConfirmation()
+                    ->modalHeading('Kirim Laporan ke Wali Kelas')
+                    ->modalDescription(function (Laporan $record) {
+                        $siswa = $record->siswa;
+                        $kelas = $siswa->kelas ?? null;
+                        $waliKelas = $kelas->waliGuru ?? null;
+
+                        if (!$kelas) {
+                            return 'Siswa ini tidak memiliki kelas.';
+                        }
+
+                        if (!$waliKelas) {
+                            return "Kelas {$kelas->nama} tidak memiliki wali kelas.";
+                        }
+
+                        $mapel = $record->jadwal->mapel->nama_matapelajaran ?? '-';
+                        $tanggal = Carbon::parse($record->tanggal)->format('d/m/Y');
+
+                        return "Anda akan mengirim laporan untuk:\n\n" .
+                            "• Siswa: {$siswa->nama} (NIS: {$siswa->nis})\n" .
+                            "• Kelas: {$kelas->nama}\n" .
+                            "• Mata Pelajaran: {$mapel}\n" .
+                            "• Tanggal: {$tanggal}\n\n" .
+                            "Kepada Wali Kelas: {$waliKelas->nama}";
+                    })
+                    ->modalIcon('heroicon-o-paper-airplane')
+                    ->modalIconColor('success')
+                    ->modalSubmitActionLabel('Kirim Sekarang')
+                    ->action(function (Laporan $record) {
+                        $siswa = $record->siswa;
+                        $kelas = $siswa->kelas ?? null;
+                        $waliKelas = $kelas->waliGuru ?? null;
+
+                        // ✅ DEBUGGING - TAMBAHKAN INI
+                        Log::info('=== DEBUG KIRIM NOTIFIKASI ===', [
+                            'laporan_id' => $record->id,
+                            'siswa_nama' => $siswa->nama,
+                            'kelas_nama' => $kelas ? $kelas->nama : 'NULL',
+                            'wali_kelas_nama' => $waliKelas ? $waliKelas->nama : 'NULL',
+                            'wali_kelas_id' => $waliKelas ? $waliKelas->id : 'NULL',
+                            'wali_kelas_user_id' => $waliKelas && $waliKelas->user ? $waliKelas->user->id : 'NULL',
+                            'wali_kelas_email' => $waliKelas && $waliKelas->user ? $waliKelas->user->email : 'NULL',
+                        ]);
+
+                        if (!$kelas || !$waliKelas) {
+                            Log::warning('Gagal kirim: kelas atau wali kelas tidak ada');
+                            Notification::make()
+                                ->danger()
+                                ->title('Gagal Mengirim')
+                                ->body($kelas ? 'Kelas ini tidak memiliki wali kelas.' : 'Siswa tidak memiliki kelas.')
+                                ->send();
+                            return;
+                        }
+
+                        // IMPLEMENTASI: Tandai laporan sebagai terkirim
+                        $record->tandaiTerkirim();
+                        Log::info('Laporan ditandai terkirim', ['laporan_id' => $record->id]);
+
+                        // 🔔 KIRIM NOTIFIKASI ke User Wali Kelas
+                        if ($waliKelas->user) {
+                            try {
+                                Log::info('Mencoba kirim notifikasi...', [
+                                    'target_user_id' => $waliKelas->user->id,
+                                    'target_email' => $waliKelas->user->email,
+                                ]);
+
+                                $waliKelas->user->notify(new LaporanMapelTerkirimNotification($record));
+
+                                Log::info('✅ Notifikasi BERHASIL dikirim!');
+
+                                // Verifikasi apakah notifikasi masuk ke database
+                                $lastNotification = $waliKelas->user->notifications()->latest()->first();
+                                Log::info('Notifikasi terakhir di database:', [
+                                    'id' => $lastNotification ? $lastNotification->id : 'NULL',
+                                    'type' => $lastNotification ? $lastNotification->type : 'NULL',
+                                ]);
+                            } catch (\Exception $e) {
+                                Log::error('❌ ERROR saat kirim notifikasi: ' . $e->getMessage());
+                                Log::error('Stack trace: ' . $e->getTraceAsString());
+
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Error')
+                                    ->body('Terjadi kesalahan saat mengirim notifikasi: ' . $e->getMessage())
+                                    ->send();
+                                return;
+                            }
+                        } else {
+                            Log::warning('⚠️ Wali Kelas tidak memiliki akun user!', [
+                                'wali_kelas_id' => $waliKelas->id,
+                                'wali_kelas_nama' => $waliKelas->nama,
+                            ]);
+
+                            Notification::make()
+                                ->warning()
+                                ->title('Peringatan')
+                                ->body("Laporan ditandai terkirim, tetapi {$waliKelas->nama} tidak memiliki akun user untuk menerima notifikasi.")
+                                ->send();
+                            return;
+                        }
+
+                        Notification::make()
+                            ->success()
+                            ->title('Berhasil Dikirim!')
+                            ->body("Laporan berhasil dikirim ke {$waliKelas->nama} (Wali Kelas {$kelas->nama})")
+                            ->send();
+                    })
+                    ->visible(
+                        fn(Laporan $record) =>
+                        !$record->terkirim_ke_wali &&
+                            $record->siswa->kelas &&
+                            $record->siswa->kelas->waliGuru
+                    ),
+
                 Tables\Actions\ViewAction::make(),
                 Tables\Actions\EditAction::make(),
                 Tables\Actions\DeleteAction::make(),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
+                    // BULK ACTION: KIRIM KE WALI KELAS
+                    Tables\Actions\BulkAction::make('kirim_bulk_ke_wali')
+                        ->label('Kirim ke Wali Kelas')
+                        ->icon('heroicon-o-paper-airplane')
+                        ->color('success')
+                        ->requiresConfirmation()
+                        ->modalHeading('Kirim Laporan ke Wali Kelas')
+                        ->modalDescription(function (Collection $records) {
+                            // Filter hanya yang belum terkirim
+                            $belumTerkirim = $records->where('terkirim_ke_wali', false);
+
+                            if ($belumTerkirim->isEmpty()) {
+                                return "⚠️ Semua laporan yang Anda pilih sudah terkirim!";
+                            }
+
+                            // Kelompokkan laporan berdasarkan kelas
+                            $groupedByKelas = $belumTerkirim->groupBy(function ($laporan) {
+                                return $laporan->siswa->kelas->id ?? 'no_class';
+                            });
+
+                            $summary = [];
+                            $totalLaporan = $belumTerkirim->count();
+
+                            foreach ($groupedByKelas as $kelasId => $laporans) {
+                                if ($kelasId === 'no_class') {
+                                    $summary[] = "• " . $laporans->count() . " laporan tanpa kelas";
+                                    continue;
+                                }
+
+                                $kelas = $laporans->first()->siswa->kelas;
+                                $waliKelas = $kelas->waliGuru;
+
+                                if (!$waliKelas) {
+                                    $summary[] = "• {$kelas->nama}: " . $laporans->count() . " laporan (⚠️ Tidak ada wali kelas)";
+                                } else {
+                                    $summary[] = "• {$kelas->nama}: " . $laporans->count() . " laporan → {$waliKelas->nama}";
+                                }
+                            }
+
+                            return "Anda akan mengirim total {$totalLaporan} laporan:\n\n" . implode("\n", $summary);
+                        })
+                        ->modalIcon('heroicon-o-paper-airplane')
+                        ->modalIconColor('success')
+                        ->modalSubmitActionLabel('Kirim Semua')
+                        ->action(function (Collection $records) {
+                            Log::info('=== BULK SEND START ===', ['total_records' => $records->count()]);
+
+                            // Filter hanya yang belum terkirim
+                            $belumTerkirim = $records->where('terkirim_ke_wali', false);
+
+                            if ($belumTerkirim->isEmpty()) {
+                                Log::info('Semua laporan sudah terkirim');
+                                Notification::make()
+                                    ->warning()
+                                    ->title('Tidak Ada yang Dikirim')
+                                    ->body('Semua laporan yang dipilih sudah terkirim sebelumnya.')
+                                    ->send();
+                                return;
+                            }
+
+                            // Kelompokkan laporan berdasarkan kelas
+                            $groupedByKelas = $belumTerkirim->groupBy(function ($laporan) {
+                                return $laporan->siswa->kelas->id ?? 'no_class';
+                            });
+
+                            $berhasil = 0;
+                            $gagal = 0;
+                            $details = [];
+
+                            foreach ($groupedByKelas as $kelasId => $laporans) {
+                                if ($kelasId === 'no_class') {
+                                    $gagal += $laporans->count();
+                                    Log::warning('Laporan tanpa kelas', ['count' => $laporans->count()]);
+                                    continue;
+                                }
+
+                                $kelas = $laporans->first()->siswa->kelas;
+                                $waliKelas = $kelas->waliGuru;
+
+                                if (!$waliKelas) {
+                                    $gagal += $laporans->count();
+                                    Log::warning('Kelas tanpa wali', ['kelas' => $kelas->nama, 'count' => $laporans->count()]);
+                                    continue;
+                                }
+
+                                Log::info('Processing kelas', [
+                                    'kelas' => $kelas->nama,
+                                    'wali_kelas' => $waliKelas->nama,
+                                    'user_id' => $waliKelas->user ? $waliKelas->user->id : 'NULL',
+                                    'laporan_count' => $laporans->count(),
+                                ]);
+
+                                // IMPLEMENTASI: Tandai semua laporan sebagai terkirim
+                                foreach ($laporans as $laporan) {
+                                    $laporan->tandaiTerkirim();
+
+                                    // 🔔 KIRIM NOTIFIKASI untuk setiap laporan
+                                    if ($waliKelas->user) {
+                                        try {
+                                            $waliKelas->user->notify(new LaporanMapelTerkirimNotification($laporan));
+                                            Log::info('Notifikasi terkirim', ['laporan_id' => $laporan->id]);
+                                        } catch (\Exception $e) {
+                                            Log::error('Error kirim notifikasi', [
+                                                'laporan_id' => $laporan->id,
+                                                'error' => $e->getMessage()
+                                            ]);
+                                        }
+                                    }
+                                }
+
+                                $berhasil += $laporans->count();
+                                $details[] = "{$laporans->count()} laporan ke {$waliKelas->nama} (Kelas {$kelas->nama})";
+                            }
+
+                            Log::info('=== BULK SEND COMPLETE ===', [
+                                'berhasil' => $berhasil,
+                                'gagal' => $gagal,
+                            ]);
+
+                            if ($berhasil > 0) {
+                                Notification::make()
+                                    ->success()
+                                    ->title('Berhasil Mengirim Laporan!')
+                                    ->body("{$berhasil} laporan berhasil dikirim:\n" . implode("\n", $details))
+                                    ->duration(10000)
+                                    ->send();
+                            }
+
+                            if ($gagal > 0) {
+                                Notification::make()
+                                    ->warning()
+                                    ->title('Perhatian')
+                                    ->body("{$gagal} laporan tidak dapat dikirim (tidak ada wali kelas atau tanpa kelas)")
+                                    ->send();
+                            }
+                        })
+                        ->deselectRecordsAfterCompletion(),
+
                     Tables\Actions\DeleteBulkAction::make(),
                 ]),
             ])
@@ -396,7 +673,7 @@ class LaporanSiswaResource extends Resource
             ->whereHas('jadwal.mapel', function ($query) use ($guru) {
                 $query->where('guru_id', $guru->id);
             })
-            ->with(['jadwal.kelas', 'jadwal.mapel', 'siswa.kelas']); // Eager loading
+            ->with(['jadwal.kelas', 'jadwal.mapel', 'siswa.kelas.waliGuru']);
     }
 
     public static function canViewAny(): bool
@@ -411,6 +688,7 @@ class LaporanSiswaResource extends Resource
 
         return Laporan::where('guru_id', $guru->id)
             ->whereNotNull('jadwal_id')
+            ->where('terkirim_ke_wali', false) // Badge: Hanya yang belum terkirim
             ->whereHas('jadwal.mapel', function ($query) use ($guru) {
                 $query->where('guru_id', $guru->id);
             })

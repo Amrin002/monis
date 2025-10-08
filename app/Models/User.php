@@ -52,8 +52,9 @@ class User extends Authenticatable
     }
 
     // Relasi: User belongsTo Guru (user_id ada di tabel gurus)
+    // ✅ User has one Guru
     public function guru()
     {
-        return $this->belongsTo(Guru::class, 'id', 'user_id');
+        return $this->hasOne(Guru::class, 'user_id');
     }
 }

@@ -22,7 +22,7 @@ class Guru extends Model
      */
     public function user()
     {
-        return $this->hasOne(User::class);
+        return $this->belongsTo(User::class, 'user_id');
     }
     public function kelasWali()
     {
@@ -45,5 +45,20 @@ class Guru extends Model
     public function laporans()
     {
         return $this->hasMany(Laporan::class);
+    }
+    public function laporanWaliKelas()
+    {
+        return $this->hasMany(LaporanWalikelas::class, 'guru_id');
+    }
+    /**
+     * Get siswa di kelas yang diampu (untuk wali kelas)
+     */
+    public function getSiswaKelasWali()
+    {
+        if (!$this->kelasWali) {
+            return collect([]);
+        }
+
+        return $this->kelasWali->siswas;
     }
 }

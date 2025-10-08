@@ -56,6 +56,8 @@ class GuruPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
-            ]);
+            ])
+            ->databaseNotifications() // 👈 TAMBAH INI!
+            ->databaseNotificationsPolling('30s'); // Auto refresh setiap 30 detik
     }
 }

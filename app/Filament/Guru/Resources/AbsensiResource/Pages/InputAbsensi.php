@@ -3,7 +3,7 @@
 
 namespace App\Filament\Guru\Resources\AbsensiResource\Pages;
 
-use App\Filament\Guru\Resources\AbsensiResource;
+use App\Filament\Resources\AbsensiResource;
 use App\Models\Absensi;
 use App\Models\Jadwal;
 use Filament\Forms;
@@ -29,10 +29,19 @@ class InputAbsensi extends Page implements HasForms
 
     public function mount(): void
     {
+        // Cek apakah ada parameter dari URL (untuk edit)
+        $jadwalId = request()->query('jadwal_id');
+        $tanggal = request()->query('tanggal');
+
         $this->form->fill([
-            'jadwal_id' => null,
-            'tanggal' => now()->format('Y-m-d'),
+            'jadwal_id' => $jadwalId,
+            'tanggal' => $tanggal ?? now()->format('Y-m-d'),
         ]);
+
+        // Load siswa jika ada parameter
+        if ($jadwalId) {
+            $this->loadSiswa($jadwalId);
+        }
     }
 
     public function form(Forms\Form $form): Forms\Form
@@ -178,7 +187,8 @@ class InputAbsensi extends Page implements HasForms
                 ->success()
                 ->send();
 
-            $this->loadSiswa($data['jadwal_id']);
+            // Redirect ke halaman list setelah simpan
+            $this->redirect(AbsensiResource::getUrl('index'));
         } catch (\Exception $e) {
             DB::rollBack();
 
@@ -200,5 +210,16 @@ class InputAbsensi extends Page implements HasForms
             ->title('Semua siswa ditandai hadir')
             ->success()
             ->send();
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            \Filament\Actions\Action::make('back')
+                ->label('Kembali')
+                ->icon('heroicon-o-arrow-left')
+                ->url(AbsensiResource::getUrl('index'))
+                ->color('gray'),
+        ];
     }
 }

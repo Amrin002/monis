@@ -6,15 +6,14 @@ namespace App\Filament\Guru\Resources;
 use App\Filament\Guru\Resources\AbsensiResource\Pages;
 use App\Models\Absensi;
 use App\Models\Jadwal;
-use App\Models\Siswa;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
-
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class AbsensiResource extends Resource
 {
@@ -65,12 +64,31 @@ class AbsensiResource extends Resource
 
     public static function table(Table $table): Table
     {
+        $guru = Auth::user()->guru;
+
         return $table
+            ->query(
+                // Query untuk mendapatkan ringkasan absensi per jadwal per tanggal
+                Absensi::query()
+                    ->select(
+                        'jadwal_id',
+                        'tanggal',
+                        DB::raw('MIN(id) as id'), // Ambil ID pertama untuk keperluan Filament
+                        DB::raw('COUNT(DISTINCT siswa_id) as total_siswa'),
+                        DB::raw('SUM(CASE WHEN status = "hadir" THEN 1 ELSE 0 END) as jumlah_hadir')
+                    )
+                    ->whereHas('jadwal.mapel', function ($query) use ($guru) {
+                        $query->where('guru_id', $guru->id);
+                    })
+                    ->groupBy('jadwal_id', 'tanggal')
+                    ->orderBy('tanggal', 'desc')
+            )
             ->columns([
                 Tables\Columns\TextColumn::make('tanggal')
                     ->label('Tanggal')
                     ->date('d/m/Y')
-                    ->sortable(),
+                    ->sortable()
+                    ->searchable(),
 
                 Tables\Columns\TextColumn::make('jadwal.kelas.nama')
                     ->label('Kelas')
@@ -86,28 +104,37 @@ class AbsensiResource extends Resource
                     ->label('Hari')
                     ->sortable(),
 
-                Tables\Columns\TextColumn::make('siswa.nama')
-                    ->label('Siswa')
-                    ->searchable(),
+                Tables\Columns\TextColumn::make('jam_ke')
+                    ->label('Jam Ke-')
+                    ->getStateUsing(function ($record) {
+                        return $record->jadwal->jam_ke ?? '-';
+                    }),
 
-                Tables\Columns\BadgeColumn::make('status')
-                    ->label('Status')
-                    ->colors([
-                        'success' => 'hadir',
-                        'warning' => 'izin',
-                        'danger' => 'sakit',
-                        'secondary' => 'alpa',
-                    ])
-                    ->formatStateUsing(fn(string $state): string => ucfirst($state)),
+                Tables\Columns\TextColumn::make('persentase_kehadiran')
+                    ->label('% Kehadiran')
+                    ->getStateUsing(function ($record) {
+                        $absensi = Absensi::where('jadwal_id', $record->jadwal_id)
+                            ->whereDate('tanggal', $record->tanggal)
+                            ->get();
 
-                Tables\Columns\TextColumn::make('keterangan')
-                    ->label('Keterangan')
-                    ->limit(30)
-                    ->toggleable(),
+                        $total = $absensi->count();
+                        if ($total == 0) return '0%';
+
+                        $hadir = $absensi->where('status', 'hadir')->count();
+                        $persentase = round(($hadir / $total) * 100);
+
+                        return $persentase . '%';
+                    })
+                    ->badge()
+                    ->color(fn($state) => match (true) {
+                        intval($state) >= 80 => 'success',
+                        intval($state) >= 60 => 'warning',
+                        default => 'danger',
+                    }),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('jadwal_id')
-                    ->label('Jadwal')
+                    ->label('Kelas')
                     ->options(function () {
                         $guru = Auth::user()->guru;
 
@@ -124,15 +151,6 @@ class AbsensiResource extends Resource
                             });
                     })
                     ->searchable(),
-
-                Tables\Filters\SelectFilter::make('status')
-                    ->label('Status')
-                    ->options([
-                        'hadir' => 'Hadir',
-                        'izin' => 'Izin',
-                        'sakit' => 'Sakit',
-                        'alpa' => 'Alpa',
-                    ]),
 
                 Tables\Filters\Filter::make('tanggal')
                     ->form([
@@ -154,14 +172,37 @@ class AbsensiResource extends Resource
                     }),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\Action::make('view')
+                    ->label('View')
+                    ->icon('heroicon-o-eye')
+                    ->color('info')
+                    ->url(fn($record) => static::getUrl('detail', [
+                        'jadwal' => $record->jadwal_id,
+                        'tanggal' => $record->tanggal
+                    ])),
+
+                Tables\Actions\Action::make('edit')
+                    ->label('Edit')
+                    ->icon('heroicon-o-pencil')
+                    ->color('warning')
+                    ->url(fn($record) => AbsensiResource::getUrl('input', [
+                        'jadwal_id' => $record->jadwal_id,
+                        'tanggal' => $record->tanggal
+                    ])),
+
+                Tables\Actions\Action::make('delete')
+                    ->label('Delete')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->action(function ($record) {
+                        // Hapus semua absensi pada jadwal dan tanggal tersebut
+                        Absensi::where('jadwal_id', $record->jadwal_id)
+                            ->whereDate('tanggal', $record->tanggal)
+                            ->delete();
+                    }),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
-                ]),
-            ])
+            ->bulkActions([])
             ->defaultSort('tanggal', 'desc');
     }
 
@@ -174,21 +215,9 @@ class AbsensiResource extends Resource
     {
         return [
             'index' => Pages\ListAbsensis::route('/'),
-            'create' => Pages\CreateAbsensi::route('/create'),
             'input' => Pages\InputAbsensi::route('/input'),
-            'edit' => Pages\EditAbsensi::route('/{record}/edit'),
+            'detail' => Pages\DetailAbsensi::route('/detail'),
         ];
-    }
-
-    public static function getEloquentQuery(): Builder
-    {
-        $guru = Auth::user()->guru;
-
-        // Hanya tampilkan absensi dari jadwal yang diajar oleh guru ini
-        return parent::getEloquentQuery()
-            ->whereHas('jadwal.mapel', function ($query) use ($guru) {
-                $query->where('guru_id', $guru->id);
-            });
     }
 
     public static function canViewAny(): bool

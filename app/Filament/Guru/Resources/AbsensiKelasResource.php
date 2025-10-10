@@ -4,8 +4,8 @@
 namespace App\Filament\Guru\Resources;
 
 use App\Filament\Guru\Resources\AbsensiKelasResource\Pages;
-use App\Filament\Guru\Resources\AbsensiKelasResource\Pages\InputAbsensiKelas;
 use App\Models\Absensi;
+use App\Models\Jadwal;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -13,6 +13,7 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class AbsensiKelasResource extends Resource
 {
@@ -30,76 +31,83 @@ class AbsensiKelasResource extends Resource
     {
         return $form
             ->schema([
-                Forms\Components\Select::make('siswa_id')
-                    ->label('Siswa')
-                    ->relationship('siswa', 'nama')
-                    ->required()
-                    ->disabled(),
-
                 Forms\Components\DatePicker::make('tanggal')
                     ->label('Tanggal')
                     ->required()
-                    ->disabled(),
-
-                Forms\Components\Select::make('status')
-                    ->label('Status')
-                    ->options([
-                        'hadir' => 'Hadir',
-                        'izin' => 'Izin',
-                        'sakit' => 'Sakit',
-                        'alpa' => 'Alpa',
-                    ])
-                    ->required(),
-
-                Forms\Components\Textarea::make('keterangan')
-                    ->label('Keterangan')
-                    ->nullable()
-                    ->rows(3),
+                    ->default(now()),
             ]);
     }
 
     public static function table(Table $table): Table
     {
+        $guru = Auth::user()->guru;
+
         return $table
+            ->query(
+                // Query untuk mendapatkan ringkasan absensi per tanggal
+                Absensi::query()
+                    ->select(
+                        'tanggal',
+                        DB::raw('MIN(id) as id'), // Ambil ID pertama untuk keperluan Filament
+                        DB::raw('COUNT(DISTINCT siswa_id) as total_siswa'),
+                        DB::raw('SUM(CASE WHEN status = "hadir" THEN 1 ELSE 0 END) as jumlah_hadir')
+                    )
+                    ->whereHas('siswa.kelas', function ($query) use ($guru) {
+                        $query->where('wali_guru_id', $guru->id);
+                    })
+                    ->whereNull('jadwal_id') // Hanya absensi harian
+                    ->groupBy('tanggal')
+                    ->orderBy('tanggal', 'desc')
+            )
             ->columns([
                 Tables\Columns\TextColumn::make('tanggal')
                     ->label('Tanggal')
                     ->date('d/m/Y')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('siswa.nama')
-                    ->label('Nama Siswa')
+                    ->sortable()
                     ->searchable(),
 
-                Tables\Columns\TextColumn::make('siswa.nis')
-                    ->label('NIS')
-                    ->searchable(),
+                Tables\Columns\TextColumn::make('hari')
+                    ->label('Hari')
+                    ->getStateUsing(function ($record) {
+                        $hari = [
+                            'Sunday' => 'Minggu',
+                            'Monday' => 'Senin',
+                            'Tuesday' => 'Selasa',
+                            'Wednesday' => 'Rabu',
+                            'Thursday' => 'Kamis',
+                            'Friday' => 'Jumat',
+                            'Saturday' => 'Sabtu',
+                        ];
+                        $namaHari = \Carbon\Carbon::parse($record->tanggal)->format('l');
+                        return $hari[$namaHari] ?? $namaHari;
+                    }),
 
-                Tables\Columns\BadgeColumn::make('status')
-                    ->label('Status')
-                    ->colors([
-                        'success' => 'hadir',
-                        'primary' => 'izin',
-                        'warning' => 'sakit',
-                        'danger' => 'alpa',
-                    ])
-                    ->formatStateUsing(fn(string $state): string => ucfirst($state)),
+                Tables\Columns\TextColumn::make('kelas')
+                    ->label('Kelas')
+                    ->getStateUsing(function () {
+                        $guru = Auth::user()->guru;
+                        return $guru->kelasWali->nama ?? '-'; // Gunakan kelasWali
+                    }),
 
-                Tables\Columns\TextColumn::make('keterangan')
-                    ->label('Keterangan')
-                    ->limit(30)
-                    ->toggleable(),
+                Tables\Columns\TextColumn::make('total_siswa')
+                    ->label('Total Siswa')
+                    ->alignCenter(),
+
+                Tables\Columns\TextColumn::make('persentase_kehadiran')
+                    ->label('% Kehadiran')
+                    ->getStateUsing(function ($record) {
+                        if ($record->total_siswa == 0) return '0%';
+                        $persentase = round(($record->jumlah_hadir / $record->total_siswa) * 100);
+                        return $persentase . '%';
+                    })
+                    ->badge()
+                    ->color(fn($state) => match (true) {
+                        intval($state) >= 80 => 'success',
+                        intval($state) >= 60 => 'warning',
+                        default => 'danger',
+                    }),
             ])
             ->filters([
-                Tables\Filters\SelectFilter::make('status')
-                    ->label('Status')
-                    ->options([
-                        'hadir' => 'Hadir',
-                        'izin' => 'Izin',
-                        'sakit' => 'Sakit',
-                        'alpa' => 'Alpa',
-                    ]),
-
                 Tables\Filters\Filter::make('tanggal')
                     ->form([
                         Forms\Components\DatePicker::make('dari')
@@ -120,14 +128,40 @@ class AbsensiKelasResource extends Resource
                     }),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\Action::make('view')
+                    ->label('View')
+                    ->icon('heroicon-o-eye')
+                    ->color('info')
+                    ->url(fn($record) => static::getUrl('detail', [
+                        'tanggal' => $record->tanggal
+                    ])),
+
+                Tables\Actions\Action::make('edit')
+                    ->label('Edit')
+                    ->icon('heroicon-o-pencil')
+                    ->color('warning')
+                    ->url(fn($record) => AbsensiKelasResource::getUrl('input', [
+                        'tanggal' => $record->tanggal
+                    ])),
+
+                Tables\Actions\Action::make('delete')
+                    ->label('Delete')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->action(function ($record) {
+                        $guru = Auth::user()->guru;
+
+                        // Hapus semua absensi pada tanggal tersebut untuk kelas ini
+                        Absensi::whereHas('siswa.kelas', function ($query) use ($guru) {
+                            $query->where('wali_guru_id', $guru->id);
+                        })
+                            ->whereNull('jadwal_id')
+                            ->whereDate('tanggal', $record->tanggal)
+                            ->delete();
+                    }),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
-                ]),
-            ])
+            ->bulkActions([])
             ->defaultSort('tanggal', 'desc');
     }
 
@@ -141,21 +175,8 @@ class AbsensiKelasResource extends Resource
         return [
             'index' => Pages\ListAbsensiKelas::route('/'),
             'input' => Pages\InputAbsensiKelas::route('/input'),
-            'edit' => Pages\EditAbsensiKelas::route('/{record}/edit'),
+            'detail' => Pages\DetailAbsensiKelas::route('/detail'),
         ];
-    }
-
-    public static function getEloquentQuery(): Builder
-    {
-        $guru = Auth::user()->guru;
-
-        // Hanya tampilkan absensi dari kelas yang diwali oleh guru ini
-        // Dan hanya absensi yang tidak terkait dengan jadwal (absensi harian kelas)
-        return parent::getEloquentQuery()
-            ->whereHas('siswa.kelas', function ($query) use ($guru) {
-                $query->where('wali_guru_id', $guru->id);
-            })
-            ->whereNull('jadwal_id'); // Hanya absensi harian, bukan per mata pelajaran
     }
 
     public static function canViewAny(): bool
